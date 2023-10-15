@@ -2,7 +2,7 @@ use core::fmt::Arguments;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use gplay::*;
 
-fn benchmark_1(arg: &str) {
+async fn benchmark_1(arg: &str) {
     struct TestLogger;
 
     impl TestLogger {
@@ -21,7 +21,7 @@ fn benchmark_1(arg: &str) {
     let mut tool = GplayTool::new(&logger);
     let args: Vec<std::ffi::OsString> = vec!["".into(), arg.into()];
 
-    tool.run(args).unwrap();
+    tool.run(args).await.unwrap();
 }
 
 fn criterion_benchmark(c: &mut Criterion) {

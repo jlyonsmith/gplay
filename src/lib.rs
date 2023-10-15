@@ -3,12 +3,8 @@ mod log_macros;
 use clap::Parser;
 use core::fmt::Arguments;
 use easy_error::{self, ResultExt};
-use std::{
-    error::Error,
-    fs::File,
-    io::{self, Read, Write},
-    path::PathBuf,
-};
+use gcp_auth::{AuthenticationManager, CustomServiceAccount};
+use std::{error::Error, path::PathBuf};
 
 pub trait GplayLog {
     fn output(self: &Self, args: Arguments);
@@ -27,46 +23,18 @@ struct Cli {
     #[arg(long = "no-color", short = 'n', env = "NO_CLI_COLOR")]
     no_color: bool,
 
-    /// The input file
-    #[arg(value_name = "INPUT_FILE")]
-    input_file: Option<PathBuf>,
-
-    /// The output file
-    #[arg(value_name = "OUTPUT_FILE")]
-    output_file: Option<PathBuf>,
+    #[arg(short = 'c', long = "cred-file", value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+    credentials_file: PathBuf,
 }
 
-impl Cli {
-    fn get_output(&self) -> Result<Box<dyn Write>, Box<dyn Error>> {
-        match self.output_file {
-            Some(ref path) => File::create(path)
-                .context(format!(
-                    "Unable to create file '{}'",
-                    path.to_string_lossy()
-                ))
-                .map(|f| Box::new(f) as Box<dyn Write>)
-                .map_err(|e| Box::new(e) as Box<dyn Error>),
-            None => Ok(Box::new(io::stdout())),
-        }
-    }
-
-    fn get_input(&self) -> Result<Box<dyn Read>, Box<dyn Error>> {
-        match self.input_file {
-            Some(ref path) => File::open(path)
-                .context(format!("Unable to open file '{}'", path.to_string_lossy()))
-                .map(|f| Box::new(f) as Box<dyn Read>)
-                .map_err(|e| Box::new(e) as Box<dyn Error>),
-            None => Ok(Box::new(io::stdin())),
-        }
-    }
-}
+const PUBLISHER_SCOPES: &[&str; 1] = &["https://www.googleapis.com/auth/androidpublisher"];
 
 impl<'a> GplayTool<'a> {
     pub fn new(log: &'a dyn GplayLog) -> GplayTool {
         GplayTool { log }
     }
 
-    pub fn run(
+    pub async fn run(
         self: &mut Self,
         args: impl IntoIterator<Item = std::ffi::OsString>,
     ) -> Result<(), Box<dyn Error>> {
@@ -78,11 +46,11 @@ impl<'a> GplayTool<'a> {
             }
         };
 
-        let mut content = String::new();
+        let service_account = CustomServiceAccount::from_file(cli.credentials_file)?;
+        let authentication_manager = AuthenticationManager::from(service_account);
+        let token = authentication_manager.get_token(PUBLISHER_SCOPES).await?;
 
-        cli.get_input()?.read_to_string(&mut content)?;
-
-        write!(cli.get_output()?, "{}", content)?;
+        println!("{}", token.as_str());
 
         Ok(())
     }
@@ -112,6 +80,6 @@ mod tests {
         let mut tool = GplayTool::new(&logger);
         let args: Vec<std::ffi::OsString> = vec!["".into(), "--help".into()];
 
-        tool.run(args).unwrap();
+        tokio_test::block_on(tool.run(args)).unwrap();
     }
 }

@@ -22,10 +22,11 @@ impl GplayLog for GplayLogger {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let logger = GplayLogger::new();
 
-    if let Err(error) = GplayTool::new(&logger).run(std::env::args_os()) {
+    if let Err(error) = GplayTool::new(&logger).run(std::env::args_os()).await {
         error!(logger, "{}", error);
         std::process::exit(1);
     }
