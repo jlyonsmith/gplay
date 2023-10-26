@@ -15,10 +15,10 @@ impl GplayLog for GplayLogger {
         println!("{}", args);
     }
     fn warning(self: &Self, args: Arguments) {
-        eprintln!("{}", format!("warning: {}", Paint::yellow(args)));
+        eprintln!("{}", Paint::yellow(format!("warning: {}", args)));
     }
     fn error(self: &Self, args: Arguments) {
-        eprintln!("{}", format!("error: {}", Paint::red(args)));
+        eprintln!("{}", Paint::red(format!("error: {}", args)));
     }
 }
 

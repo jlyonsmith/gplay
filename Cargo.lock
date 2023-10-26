@@ -555,6 +555,7 @@ dependencies = [
  "gcp_auth",
  "lazy_static",
  "reqwest",
+ "serde",
  "tokio",
  "tokio-test",
  "yansi",
