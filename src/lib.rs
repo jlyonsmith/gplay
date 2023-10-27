@@ -1,10 +1,13 @@
+mod api_structs;
 mod log_macros;
 
+use api_structs::*;
 use clap::{Parser, Subcommand};
 use core::fmt::Arguments;
 use easy_error::{self, ResultExt};
 use gcp_auth::{AuthenticationManager, CustomServiceAccount};
-use serde::{Deserialize, Serialize};
+use reqwest::{Client, Response};
+use serde::Deserialize;
 use std::path::Path;
 use std::time::Duration;
 use std::{error::Error, path::PathBuf};
@@ -61,52 +64,6 @@ enum Commands {
         )]
         timeout_secs: u64,
     },
-}
-
-#[derive(Deserialize)]
-struct EditInsertResult {
-    id: String,
-}
-
-#[derive(Deserialize)]
-struct Bundle {
-    #[serde(rename = "versionCode")]
-    version_code: i32,
-    sha256: String,
-}
-
-#[derive(Deserialize)]
-struct EditBundlesList {
-    bundles: Vec<Bundle>,
-}
-
-#[derive(Deserialize)]
-struct ErrorResponse {
-    error: ApiError,
-}
-
-#[derive(Deserialize)]
-struct ApiError {
-    message: String,
-}
-
-#[derive(Deserialize, Serialize)]
-struct TracksList {
-    tracks: Vec<Track>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct Track {
-    #[serde(rename = "track")]
-    name: String,
-    releases: Vec<Release>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct Release {
-    status: String,
-    #[serde(rename = "versionCodes")]
-    version_codes: Vec<String>,
 }
 
 impl<'a> GplayTool<'a> {
@@ -169,139 +126,228 @@ impl<'a> GplayTool<'a> {
         Ok(())
     }
 
-    async fn list_bundles(&self, token: &str, package_name: &str) -> Result<(), Box<dyn Error>> {
-        output!(self.log, "Opening an edit");
+    // Can we use PhantomData here?  Check the length of the returned body and return that instead?
+    async fn get_response<T: for<'de> Deserialize<'de>>(
+        response: Response,
+    ) -> Result<T, Box<dyn Error>> {
+        let status = response.status();
 
-        // Get an edit id
-        let client = reqwest::Client::new();
-        let response = client
-            .post(format!(
-                "{}/{package_name}/edits",
-                Self::EDIT_URL,
-                package_name = package_name
-            ))
-            .bearer_auth(token)
-            .body("{}")
-            .send()
-            .await?;
+        if status.is_success() {
+            Ok(response.json::<T>().await?)
+        } else {
+            if let Ok(error) = response.json::<ErrorResponse>().await {
+                Err(error.error.message.into())
+            } else {
+                Err(status.to_string().into())
+            }
+        }
+    }
 
-        if response.status().is_success() {
-            let id = response.json::<EditInsertResult>().await?.id;
-            let response = client
-                .get(format!(
-                    "{}/{package_name}/edits/{edit_id}/bundles",
+    async fn get_empty_response(response: Response) -> Result<(), Box<dyn Error>> {
+        let status = response.status();
+
+        if status.is_success() {
+            Ok(())
+        } else {
+            if let Ok(error) = response.json::<ErrorResponse>().await {
+                Err(error.error.message.into())
+            } else {
+                Err(status.to_string().into())
+            }
+        }
+    }
+
+    async fn open_edit(
+        &self,
+        client: &Client,
+        token: &str,
+        package_name: &str,
+    ) -> Result<String, Box<dyn Error>> {
+        Ok(Self::get_response::<EditInsert>(
+            client
+                .post(format!(
+                    "{}/{package_name}/edits",
                     Self::EDIT_URL,
-                    package_name = package_name,
-                    edit_id = id
+                    package_name = package_name
                 ))
                 .bearer_auth(token)
+                .body("{}")
                 .send()
-                .await?;
+                .await?,
+        )
+        .await?
+        .id)
+    }
 
-            if response.status().is_success() {
-                let edit_bundles_list = response.json::<EditBundlesList>().await?;
+    async fn commit_edit(
+        &self,
+        client: &Client,
+        token: &str,
+        package_name: &str,
+        edit_id: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        Self::get_empty_response(
+            client
+                .post(format!(
+                    "{}/{package_name}/edits/{edit_id}:commit",
+                    Self::EDIT_URL,
+                    package_name = package_name,
+                    edit_id = edit_id
+                ))
+                .bearer_auth(token)
+                .header("Content-Length", 0)
+                .send()
+                .await?,
+        )
+        .await
+    }
 
-                for bundle in edit_bundles_list.bundles.iter() {
-                    output!(
-                        self.log,
-                        "Version {} [{}]",
-                        bundle.version_code,
-                        bundle.sha256
-                    );
-                }
-            } else {
-                error!(self.log, "Unable to get list of bundles");
-            }
-
-            output!(self.log, "Deleting edit");
-
-            let response = client
+    async fn delete_edit(
+        &self,
+        client: &Client,
+        token: &str,
+        package_name: &str,
+        edit_id: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        Self::get_empty_response(
+            client
                 .delete(format!(
                     "{}/{package_name}/edits/{edit_id}",
                     Self::EDIT_URL,
                     package_name = package_name,
-                    edit_id = id
+                    edit_id = edit_id
                 ))
                 .bearer_auth(token)
                 .send()
-                .await?;
+                .await?,
+        )
+        .await
+    }
 
-            if !response.status().is_success() {
-                warning!(
-                    self.log,
-                    "Unable to delete edit: {}",
-                    response.status().as_u16()
-                )
-            }
-        } else {
-            error!(self.log, "Could not open edit")
+    async fn list_bundles(&self, token: &str, package_name: &str) -> Result<(), Box<dyn Error>> {
+        let client = reqwest::Client::new();
+        let edit_id = self.open_edit(&client, token, package_name).await?;
+        let edit_bundles_list = Self::get_response::<EditBundlesList>(
+            client
+                .get(format!(
+                    "{}/{package_name}/edits/{edit_id}/bundles",
+                    Self::EDIT_URL,
+                    package_name = package_name,
+                    edit_id = edit_id
+                ))
+                .bearer_auth(token)
+                .send()
+                .await?,
+        )
+        .await?;
+
+        for bundle in edit_bundles_list.bundles.iter() {
+            output!(
+                self.log,
+                "Version {} [{}]",
+                bundle.version_code,
+                bundle.sha256
+            );
         }
+
+        self.delete_edit(&client, token, package_name, &edit_id)
+            .await?;
 
         Ok(())
     }
 
     async fn list_tracks(&self, token: &str, package_name: &str) -> Result<(), Box<dyn Error>> {
-        output!(self.log, "Opening an edit");
-
-        // Get an edit id
         let client = reqwest::Client::new();
-        let response = client
-            .post(format!(
-                "{}/{package_name}/edits",
-                Self::EDIT_URL,
-                package_name = package_name
-            ))
-            .bearer_auth(token)
-            .body("{}")
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            let id = response.json::<EditInsertResult>().await?.id;
-            let response = client
+        let edit_id = self.open_edit(&client, token, package_name).await?;
+        let tracks_list = Self::get_response::<TracksList>(
+            client
                 .get(format!(
                     "{}/{package_name}/edits/{edit_id}/tracks",
                     Self::EDIT_URL,
                     package_name = package_name,
-                    edit_id = id
+                    edit_id = edit_id
                 ))
                 .bearer_auth(token)
                 .send()
-                .await?;
+                .await?,
+        )
+        .await?;
 
-            if response.status().is_success() {
-                let tracks_list = response.json::<TracksList>().await?;
+        for track in tracks_list.tracks.iter() {
+            output!(self.log, "Track '{}'", track.name);
+        }
 
-                for track in tracks_list.tracks.iter() {
-                    output!(self.log, "Track '{}'", track.name);
-                }
-            } else {
-                error!(self.log, "Unable to get list of tracks");
-            }
+        self.delete_edit(&client, token, package_name, &edit_id)
+            .await?;
 
-            output!(self.log, "Deleting edit");
+        Ok(())
+    }
 
-            let response = client
-                .delete(format!(
-                    "{}/{package_name}/edits/{edit_id}",
+    async fn inner_upload_bundle(
+        &self,
+        client: &Client,
+        token: &str,
+        package_name: &str,
+        edit_id: &str,
+        aab_file: &Path,
+        track_name: &str,
+        timeout_secs: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        let byte_buf = std::fs::read(aab_file).context("Unable to read bundle file")?;
+
+        output!(
+            self.log,
+            "Read bundle file '{}' ({} bytes), uploading...",
+            aab_file.to_string_lossy(),
+            byte_buf.len()
+        );
+
+        let bundle = Self::get_response::<Bundle>(
+            client
+                .post(format!(
+                    "{}/{package_name}/edits/{edit_id}/bundles?uploadType=media",
+                    Self::UPLOAD_URL,
+                    package_name = package_name,
+                    edit_id = edit_id
+                ))
+                .timeout(Duration::from_secs(timeout_secs))
+                .bearer_auth(token)
+                .header("Content-Type", "application/octet-stream")
+                .header("Content-Length", byte_buf.len())
+                .body(byte_buf)
+                .send()
+                .await?,
+        )
+        .await?;
+
+        output!(
+            self.log,
+            "Version {} [{}] uploaded",
+            bundle.version_code,
+            bundle.sha256
+        );
+
+        Self::get_response::<Track>(
+            client
+                .put(format!(
+                    "{}/{package_name}/edits/{edit_id}/tracks/{track_name}",
                     Self::EDIT_URL,
                     package_name = package_name,
-                    edit_id = id
+                    edit_id = edit_id,
+                    track_name = track_name
                 ))
                 .bearer_auth(token)
+                .json(&Track {
+                    name: track_name.to_string(),
+                    releases: vec![Release {
+                        status: "draft".to_string(),
+                        version_codes: Some(vec![bundle.version_code.to_string()]),
+                    }],
+                })
                 .send()
-                .await?;
-
-            if !response.status().is_success() {
-                warning!(
-                    self.log,
-                    "Unable to delete edit: {}",
-                    response.status().as_u16()
-                )
-            }
-        } else {
-            error!(self.log, "Could not open edit")
-        }
+                .await?,
+        )
+        .await?;
 
         Ok(())
     }
@@ -314,146 +360,30 @@ impl<'a> GplayTool<'a> {
         track_name: &str,
         timeout_secs: u64,
     ) -> Result<(), Box<dyn Error>> {
-        output!(self.log, "Opening an edit");
-
-        // Get an edit id
         let client = reqwest::Client::new();
-        let response = client
-            .post(format!(
-                "{}/{package_name}/edits",
-                Self::EDIT_URL,
-                package_name = package_name
-            ))
-            .bearer_auth(token)
-            .body("{}")
-            .send()
-            .await?;
+        let edit_id = self.open_edit(&client, token, package_name).await?;
 
-        if response.status().is_success() {
-            let id = response.json::<EditInsertResult>().await?.id;
-            let byte_buf = std::fs::read(aab_file).context("Unable to read bundle file")?;
+        let result = self
+            .inner_upload_bundle(
+                &client,
+                token,
+                package_name,
+                &edit_id,
+                aab_file,
+                track_name,
+                timeout_secs,
+            )
+            .await;
 
-            output!(
-                self.log,
-                "Read bundle file '{}' ({} bytes)",
-                aab_file.to_string_lossy(),
-                byte_buf.len()
-            );
-            output!(self.log, "Uploading bundle");
-
-            let response = client
-                .post(format!(
-                    "{}/{package_name}/edits/{edit_id}/bundles?uploadType=media",
-                    Self::UPLOAD_URL,
-                    package_name = package_name,
-                    edit_id = id
-                ))
-                .timeout(Duration::from_secs(timeout_secs))
-                .bearer_auth(token)
-                .header("Content-Type", "application/octet-stream")
-                .header("Content-Length", byte_buf.len())
-                .body(byte_buf)
-                .send()
+        if let Ok(_) = result {
+            output!(self.log, "Committing upload");
+            self.commit_edit(&client, token, package_name, &edit_id)
                 .await?;
-
-            if response.status().is_success() {
-                let bundle = response.json::<Bundle>().await?;
-
-                output!(
-                    self.log,
-                    "Uploaded Version {} [{}]",
-                    bundle.version_code,
-                    bundle.sha256
-                );
-
-                let response = client
-                    .put(format!(
-                        "{}/{package_name}/edits/{edit_id}/tracks/{track_name}",
-                        Self::EDIT_URL,
-                        package_name = package_name,
-                        edit_id = id,
-                        track_name = track_name
-                    ))
-                    .bearer_auth(token)
-                    .json(&Track {
-                        name: track_name.to_string(),
-                        releases: vec![Release {
-                            status: "draft".to_string(),
-                            version_codes: vec![bundle.version_code.to_string()],
-                        }],
-                    })
-                    .send()
-                    .await?;
-
-                if !response.status().is_success() {
-                    let status_code = response.status().to_string();
-
-                    error!(
-                        self.log,
-                        "Unable to set track: {}",
-                        if let Ok(error) = response.json::<ErrorResponse>().await {
-                            error.error.message
-                        } else {
-                            status_code
-                        }
-                    );
-                }
-
-                let response = client
-                    .post(format!(
-                        "{}/{package_name}/edits/{edit_id}:commit",
-                        Self::EDIT_URL,
-                        package_name = package_name,
-                        edit_id = id
-                    ))
-                    .bearer_auth(token)
-                    .header("Content-Length", 0)
-                    .send()
-                    .await?;
-
-                if response.status().is_success() {
-                    output!(self.log, "Committed edit")
-                } else {
-                    let status_code = response.status().to_string();
-
-                    error!(
-                        self.log,
-                        "Failed to commit edit: {}",
-                        if let Ok(error) = response.json::<ErrorResponse>().await {
-                            error.error.message
-                        } else {
-                            status_code
-                        }
-                    );
-                }
-            } else {
-                error!(
-                    self.log,
-                    "Unable to upload bundle file: {}",
-                    response.status().as_u16()
-                );
-
-                let response = client
-                    .delete(format!(
-                        "{}/{package_name}/edits/{edit_id}:commit",
-                        Self::EDIT_URL,
-                        package_name = package_name,
-                        edit_id = id
-                    ))
-                    .bearer_auth(token)
-                    .send()
-                    .await?;
-
-                if !response.status().is_success() {
-                    warning!(
-                        self.log,
-                        "Unable to delete edit: {}",
-                        response.status().as_u16()
-                    )
-                }
-            }
         } else {
-            error!(self.log, "Could not open edit")
+            self.delete_edit(&client, token, package_name, &edit_id)
+                .await?;
+            // Return the error from the failed upload
+            return result;
         }
 
         Ok(())
