@@ -5,7 +5,7 @@ use api_structs::*;
 use clap::{Parser, Subcommand};
 use core::fmt::Arguments;
 use easy_error::{self, ResultExt};
-use gcp_auth::{AuthenticationManager, CustomServiceAccount};
+use gcp_auth::{AuthenticationManager, CustomServiceAccount, Token};
 use reqwest::{Client, Response};
 use serde::Deserialize;
 use std::path::Path;
@@ -101,10 +101,10 @@ impl<'a> GplayTool<'a> {
 
         match &cli.command {
             Some(Commands::ListBundles) => {
-                self.list_bundles(token.as_str(), &cli.package_name).await?;
+                self.list_bundles(&token, &cli.package_name).await?;
             }
             Some(Commands::ListTracks) => {
-                self.list_tracks(token.as_str(), &cli.package_name).await?;
+                self.list_tracks(&token, &cli.package_name).await?;
             }
             Some(Commands::Upload {
                 aab_file,
@@ -112,7 +112,7 @@ impl<'a> GplayTool<'a> {
                 timeout_secs,
             }) => {
                 self.upload_bundle(
-                    token.as_str(),
+                    &token,
                     &cli.package_name,
                     aab_file,
                     track_name,
@@ -160,7 +160,7 @@ impl<'a> GplayTool<'a> {
     async fn open_edit(
         &self,
         client: &Client,
-        token: &str,
+        token: &Token,
         package_name: &str,
     ) -> Result<String, Box<dyn Error>> {
         Ok(Self::get_response::<EditInsert>(
@@ -170,7 +170,7 @@ impl<'a> GplayTool<'a> {
                     Self::EDIT_URL,
                     package_name = package_name
                 ))
-                .bearer_auth(token)
+                .bearer_auth(token.as_str())
                 .body("{}")
                 .send()
                 .await?,
@@ -182,7 +182,7 @@ impl<'a> GplayTool<'a> {
     async fn commit_edit(
         &self,
         client: &Client,
-        token: &str,
+        token: &Token,
         package_name: &str,
         edit_id: &str,
     ) -> Result<(), Box<dyn Error>> {
@@ -194,7 +194,7 @@ impl<'a> GplayTool<'a> {
                     package_name = package_name,
                     edit_id = edit_id
                 ))
-                .bearer_auth(token)
+                .bearer_auth(token.as_str())
                 .header("Content-Length", 0)
                 .send()
                 .await?,
@@ -205,7 +205,7 @@ impl<'a> GplayTool<'a> {
     async fn delete_edit(
         &self,
         client: &Client,
-        token: &str,
+        token: &Token,
         package_name: &str,
         edit_id: &str,
     ) -> Result<(), Box<dyn Error>> {
@@ -217,14 +217,14 @@ impl<'a> GplayTool<'a> {
                     package_name = package_name,
                     edit_id = edit_id
                 ))
-                .bearer_auth(token)
+                .bearer_auth(token.as_str())
                 .send()
                 .await?,
         )
         .await
     }
 
-    async fn list_bundles(&self, token: &str, package_name: &str) -> Result<(), Box<dyn Error>> {
+    async fn list_bundles(&self, token: &Token, package_name: &str) -> Result<(), Box<dyn Error>> {
         let client = reqwest::Client::new();
         let edit_id = self.open_edit(&client, token, package_name).await?;
         let edit_bundles_list = Self::get_response::<EditBundlesList>(
@@ -235,7 +235,7 @@ impl<'a> GplayTool<'a> {
                     package_name = package_name,
                     edit_id = edit_id
                 ))
-                .bearer_auth(token)
+                .bearer_auth(token.as_str())
                 .send()
                 .await?,
         )
@@ -256,7 +256,7 @@ impl<'a> GplayTool<'a> {
         Ok(())
     }
 
-    async fn list_tracks(&self, token: &str, package_name: &str) -> Result<(), Box<dyn Error>> {
+    async fn list_tracks(&self, token: &Token, package_name: &str) -> Result<(), Box<dyn Error>> {
         let client = reqwest::Client::new();
         let edit_id = self.open_edit(&client, token, package_name).await?;
         let tracks_list = Self::get_response::<TracksList>(
@@ -267,7 +267,7 @@ impl<'a> GplayTool<'a> {
                     package_name = package_name,
                     edit_id = edit_id
                 ))
-                .bearer_auth(token)
+                .bearer_auth(token.as_str())
                 .send()
                 .await?,
         )
@@ -286,7 +286,7 @@ impl<'a> GplayTool<'a> {
     async fn inner_upload_bundle(
         &self,
         client: &Client,
-        token: &str,
+        token: &Token,
         package_name: &str,
         edit_id: &str,
         aab_file: &Path,
@@ -311,7 +311,7 @@ impl<'a> GplayTool<'a> {
                     edit_id = edit_id
                 ))
                 .timeout(Duration::from_secs(timeout_secs))
-                .bearer_auth(token)
+                .bearer_auth(token.as_str())
                 .header("Content-Type", "application/octet-stream")
                 .header("Content-Length", byte_buf.len())
                 .body(byte_buf)
@@ -336,7 +336,7 @@ impl<'a> GplayTool<'a> {
                     edit_id = edit_id,
                     track_name = track_name
                 ))
-                .bearer_auth(token)
+                .bearer_auth(token.as_str())
                 .json(&Track {
                     name: track_name.to_string(),
                     releases: vec![Release {
@@ -354,7 +354,7 @@ impl<'a> GplayTool<'a> {
 
     async fn upload_bundle(
         &self,
-        token: &str,
+        token: &Token,
         package_name: &str,
         aab_file: &Path,
         track_name: &str,
