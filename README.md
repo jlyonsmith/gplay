@@ -4,26 +4,23 @@
 [![Crates.io](https://img.shields.io/crates/v/gplay.svg)](https://crates.io/crates/gplay)
 [![Docs.rs](https://docs.rs/gplay/badge.svg)](https://docs.rs/gplay)
 
-This is a tool uploading bundles to the Google Play console from the command line.  It makes use of the [Google Play Developer API](https://developers.google.com/android-publisher/getting_started).
-
 ## Introduction
 
-This tool is intended to enable you to automatically upload Android `.aab` bundle files to the Google Playstore as part of your automated build process.  The goal is something similar to the `xcrun altool` tool for iOS. It has some additional features to allow you to list the existing versions and the available test tracks.
+This is a command line tool to enable you to upload Android `.aab` bundle files to the Google Playstore as part of your automated build process.  The goal is something similar to the `xcrun altool` tool for iOS. It has some additional features to allow you to list the existing bundle versions and the available test tracks. It makes use of the [Google Play Developer API](https://developers.google.com/android-publisher/getting_started).
 
-Run `gplay --help` to see the available options. After your build completes you'll do something like this:
+After `cargo install gplay`, run `gplay --help` to see the available options. After your build completes you'll do something like this:
 
 ```sh
-gplay upload --cred-file ~/.playstore/your-name-32f41bf78d1a.json --package-name com.your-name.your-app --bundle-
-file ./build/app/outputs/bundle/appRelease/app-release.aab --track-name internal
+gplay upload --cred-file ~/.playstore/your-name-32f41bf78d1a.json --package-name com.your-name.your-app --bundle-file ./build/app/outputs/bundle/appRelease/app-release.aab --track-name internal
 ```
 
-The tool uses the simple upload model, so you will need to increase the timeout for large bundle files.
+The tool uses the [simple, non-restartable upload](https://developers.google.com/android-publisher/upload#simple) approach, so you will need to increase the timeout for large bundle files.  The default timeout works well for bundles in the <50MB range on an 100Mbit network connection.
 
 ## Setup
 
 This tool uses the Google Play Android Developer API in Google Cloud to upload new bundle builds.  Setting up Google Cloud is a bit overwhelming.
 
-> It is important to note how Google app versioning.  While your app should have a semantic version (major, minor, patch) each build also needs to have a unique integer version number across all releases of the app.  You cannot upload the same build version more than once.  Also, it seems that build numbers can be uploaded in any order, they just need to be unique.  You'll need to figure out how this works in the context of your build system.
+> It is important to note how Google does app versioning.  While your app will likely have a semantic version (major, minor, patch), each bundle build needs to have a unique integer version number, across all releases of the app.  You cannot upload the same bundle version more than once.  Bundle version numbers can be uploaded in any order, they just need to be unique.  You'll need to figure out how this works in the context of your build and branching system.
 
 Here is a general summary of the steps you will need to take.
 
@@ -44,6 +41,6 @@ Once this is done you can use the `upload` sub-command to upload your binaries t
 Pull requests welcome for the following features:
 
 - Support for re-startable uploads
-- More Android Publisher API's support
+- More Android Publisher API support
 - Refactoring to improve the code
 - Support for other methods of authentication
